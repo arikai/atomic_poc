@@ -6,98 +6,94 @@ defmodule Atomic.Base.Queue do
   # Store details:
   #
   # :atomics
-  # Queue: N-wide array, where N - length, or number of slots for queue
+  # Queue: N-wide array, where N - cap, or number of slots for queue
   # Meta: info about queue. [LastPopIndex, Get(Pop)Semaphore, PushSemaphore]
   # :persistent_term
   # {__MODULE__, queue_name} -> {queue_ref, meta_ref, queue_length}
 
   @opaque queue :: reference
   @opaque meta :: reference
-  @opaque length :: integer
-  @opaque t :: {queue, meta, length}
+  @opaque capacity :: integer
+  @opaque t :: {queue, meta, capacity}
 
   @type opts :: [init: boolean | integer]
 
   defmacro lastpop, do: 1
-  defmacro getsem, do: 2
-  defmacro pushsem, do: 3
+  defmacro popsem, do: 2
+  defmacro lastpush, do: 3
+  defmacro pushsem, do: 4
+  defmacro meta_len, do: 4
 
   @spec new(opts) :: {:ok, queue} | {:error, any}
   def new(opts) do
-    length =
-      case Keyword.fetch(opts, :length) do
-        {:ok, length} when is_integer(length) -> length
-        :error -> raise "#{__MODULE__}: [length: integer] option is required"
+    capacity =
+      case Keyword.fetch(opts, :capacity) do
+        {:ok, capacity} when is_integer(capacity) ->
+          capacity
+        :error ->
+          raise ArgumentError,
+            message: "#{__MODULE__}: [capacity: integer] option is required"
+      end
+
+    init =
+      case Keyword.get(opts, :init, true) do
+        true ->
+          capacity
+        false ->
+          0
+        i when is_integer(i) and i >= 0 and i <= capacity ->
+          i
+        i when is_integer(i) ->
+          raise ArgumentError,
+            message: "#{__MODULE__}: 'init' option value is "<>
+            "boolean or pos_integer <= cap"
       end
 
     queue =
-      length
+      capacity
       |> :atomics.new(signed: true)
-      |> init_queue(length, opts)
+      |> init_queue(init)
 
     meta =
-      :atomics.new(3, signed: true)
-      |> init_meta(length, opts)
+      meta_len()
+      |> :atomics.new(signed: true)
+      |> init_meta(capacity, init)
 
-    {:ok, {queue, meta, length}}
+    {:ok, {queue, meta, capacity}}
   end
 
-  defp init_queue(ref, length, opts) do
-    case Keyword.get(opts, :init, true) do
-      i when is_integer(i) ->
-        do_init_queue(ref, min(length, i), 1)
-      true ->
-        do_init_queue(ref, length, 1)
-      false ->
-        ref
-    end
-  end
-  defp do_init_queue(ref, limit, i) when i > limit, do: ref
-  defp do_init_queue(ref, limit, i) do
-    :atomics.put(ref, i, i)
-    do_init_queue(ref, limit, i+1)
+  defp init_queue(ref, init), do: do_init_queue(ref, init, 1)
+
+  defp do_init_queue(ref, init_cnt, i) when i > init_cnt, do: ref
+  defp do_init_queue(ref, init_cnt, i) do
+    :ok = :atomics.put(ref, i, i)
+    do_init_queue(ref, init_cnt, i+1)
   end
 
-  defp init_meta(ref, length, opts) do
+  defp init_meta(ref, cap, init) do
     :ok = :atomics.put(ref, lastpop(), -1)
-
-    case Keyword.get(opts, :init, true) do
-      true ->
-        :ok = :atomics.put(ref, getsem(), length)
-        :ok = :atomics.put(ref, pushsem(), 0)
-      false ->
-        :ok = :atomics.put(ref, getsem(), 0)
-        :ok = :atomics.put(ref, pushsem(), length)
-    end
+    :ok = :atomics.put(ref, popsem(), init)
+    :ok = :atomics.put(ref, lastpush(), mod(init-1, cap))
+    :ok = :atomics.put(ref, pushsem(), cap - init)
 
     ref
   end
 
   @spec pop(t) :: integer | :locked
-  def pop({queue, meta, len} = q) do
+  def pop({queue, meta, cap} = q) do
     label = :erlang.unique_integer()
     __debug__("Before pop #{label}", q)
 
     answer =
-      if :atomics.sub_get(meta, getsem(), 1) < 0 do
-        :ok = :atomics.add(meta, getsem(), 1)
+      if :atomics.sub_get(meta, popsem(), 1) < 0 do
+        :ok = :atomics.add(meta, popsem(), 1)
         :locked
       else
-        # Conflict:
-        # If lastpop is incremented (1)
-        # but then used in push to calculate idx for push
-        # before PS gets fixed (2)
-        # the idx for push will be off by one
-
-        # 1
         raw_idx = :atomics.add_get(meta, lastpop(), 1)
 
-        if raw_idx == len, do: :atomics.sub(meta, lastpop(), len)
-        idx = mod(raw_idx, len)
+        if raw_idx == cap, do: :atomics.sub(meta, lastpop(), cap) # try mod
 
-        item = :atomics.exchange(queue, idx+1, -1)
-
-        # 2
+        item = :atomics.exchange(queue, mod(raw_idx, cap)+1, -1)
         :ok = :atomics.add(meta, pushsem(), 1)
         item
       end
@@ -107,23 +103,23 @@ defmodule Atomic.Base.Queue do
   end
 
   @spec push(t, item :: integer) :: :ok | :locked
-  def push({queue, meta, len} = q, item) do
+  def push({queue, meta, cap} = q, item) do
     label = :erlang.unique_integer()
     __debug__("Before push #{item} #{label}", q)
 
-    # 3
-    idx_base = :atomics.get(meta, lastpop())
-    # 4
-    dec = :atomics.sub_get(meta, pushsem(), 1)
     answer =
-      if dec < 0 do
-        :ok = :atomics.add(meta, pushsem(), 1)
-        :locked
-      else
-        idx = mod(idx_base - dec, len)
-        :ok = :atomics.put(queue, idx+1, item)
-        :ok = :atomics.add(meta, getsem(), 1)
-      end
+    if :atomics.sub_get(meta, pushsem(), 1) < 0 do
+      :ok = :atomics.add(meta, pushsem(), 1)
+      :locked
+    else
+      raw_idx = :atomics.add_get(meta, lastpush(), 1)
+
+      if raw_idx == cap, do: :atomics.sub(meta, lastpush(), cap) # try mod
+
+      :ok = :atomics.put(queue, mod(raw_idx, cap)+1, item)
+      :ok = :atomics.add(meta, popsem(), 1)
+      :ok
+    end
 
     __debug__("After push #{item} (#{answer}) #{label}", q)
     answer
@@ -134,12 +130,12 @@ defmodule Atomic.Base.Queue do
   defp __debug__(header, {q, m, l}) do
     require Logger
     items = Enum.map(1..l, &:atomics.get(q, &1))
-    {fp, gs, ps} = Enum.map(1..3, &:atomics.get(m, &1)) |> List.to_tuple()
+    {lo, os, lu, uo} = Enum.map(1..4, &:atomics.get(m, &1)) |> List.to_tuple()
     """
     # #{header}
     Queue
-    Length: #{l}
-    Meta: FP=#{fp} GS=#{gs} PS=#{ps}
+    Capacity: #{l}
+    Meta: LO=#{lo} OS=#{os} LU=#{lu} UO=#{uo}
     Items: #{inspect items}
     """
     |> Logger.debug()

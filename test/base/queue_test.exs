@@ -5,7 +5,7 @@ defmodule AtomicTest.Base.Queue do
   doctest Queue
 
   def new(length \\ 5) do
-    assert {:ok, queue} = Queue.new(length: length)
+    assert {:ok, queue} = Queue.new(capacity: length)
     queue
   end
 

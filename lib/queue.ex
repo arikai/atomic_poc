@@ -16,17 +16,17 @@ defmodule Atomic.Queue do
     }
 
   @enforce_keys [:count, :queue, :map, :remap]
-  defstruct @enforce_keys ++ [allow_new: false]
+  defstruct @enforce_keys
 
   def new(args, opts \\ []) do
-    {map, remap, count} = make_args(args) |> IO.inspect(label: "a")
+    {map, remap, count} = make_args(args)
 
     opts =
       case count do
         0 ->
           opts
         _ ->
-          Keyword.put_new(opts, :length, count)
+          Keyword.put_new(opts, :capacity, count)
       end
 
     {:ok, queue} = Base.Queue.new(opts)
@@ -57,14 +57,20 @@ defmodule Atomic.Queue do
     {Map.new(ml), Map.new(rml), count}
   end
 
-  def pop(%Queue{queue: queue, remap: remap}) do
+  def pop(%Queue{queue: queue, remap: remap} = q) do
     case Base.Queue.pop(queue) do
       :locked -> {:error, :empty}
-      idx -> {:ok, Map.fetch!(remap, idx)}
+      idx ->
+        case Map.fetch(remap, idx) do
+          {:ok, _} = ok -> ok
+          :error -> # Item was deleted from queue
+            pop(q)
+        end
     end
   end
 
   def push(%Queue{queue: queue, map: map}, value) do
+    # TODO with allow_new
     with {:ok, idx} <- Map.fetch(map, value),
          :ok <- Base.Queue.push(queue, idx)
       do
@@ -72,6 +78,15 @@ defmodule Atomic.Queue do
       else
         :error -> {:error, :unknown_value}
         {:error, _} = e -> e
+    end
+  end
+
+  # Problem: can't be added bc of case of shared queue
+  def delete(%Queue{map: map, remap: remap}, item) do
+    case Map.pop(map, item) do
+      {nil, _} -> {:error, :unknown_value}
+      {idx, new_map} ->
+
     end
   end
 
