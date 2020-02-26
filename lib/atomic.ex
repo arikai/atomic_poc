@@ -1,0 +1,3 @@
+defmodule Atomic do
+
+end
