@@ -1,21 +1,7 @@
 # Atomic
 
-**TODO: Add description**
+Proof of concept for atomic data structures (currently only queue is implemented) via atomics module of Erlang.
 
-## Installation
+Refer to `tests` and `benchmarks` directory for example usage and usecases.
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `atomic` to your list of dependencies in `mix.exs`:
-
-```elixir
-def deps do
-  [
-    {:atomic, "~> 0.1.0"}
-  ]
-end
-```
-
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at [https://hexdocs.pm/atomic](https://hexdocs.pm/atomic).
-
+Currently there's a heisenbug in the base/queue.ex module.
