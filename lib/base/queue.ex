@@ -16,7 +16,7 @@ defmodule Atomic.Base.Queue do
   @opaque capacity :: integer
   @opaque t :: {queue, meta, capacity}
 
-  @type opts :: [init: boolean | integer]
+  @type opts :: [capacity: pos_integer, init: boolean | pos_integer]
 
   defmacro lastpop, do: 1
   defmacro popsem, do: 2
@@ -26,6 +26,8 @@ defmodule Atomic.Base.Queue do
 
   @spec new(opts) :: {:ok, queue} | {:error, any}
   def new(opts) do
+    #TODO: support length for init
+
     capacity =
       case Keyword.fetch(opts, :capacity) do
         {:ok, capacity} when is_integer(capacity) ->
@@ -82,7 +84,7 @@ defmodule Atomic.Base.Queue do
   @spec pop(t) :: integer | :locked
   def pop({queue, meta, cap} = q) do
     label = :erlang.unique_integer()
-    __debug__("Before pop #{label}", q)
+    # __debug__("Before pop #{label}", q)
 
     answer =
       if :atomics.sub_get(meta, popsem(), 1) < 0 do
@@ -98,14 +100,14 @@ defmodule Atomic.Base.Queue do
         item
       end
 
-    __debug__("After pop (#{answer}) #{label}", q)
+    # __debug__("After pop (#{answer}) #{label}", q)
     answer
   end
 
   @spec push(t, item :: integer) :: :ok | :locked
   def push({queue, meta, cap} = q, item) do
     label = :erlang.unique_integer()
-    __debug__("Before push #{item} #{label}", q)
+    # __debug__("Before push #{item} #{label}", q)
 
     answer =
     if :atomics.sub_get(meta, pushsem(), 1) < 0 do
@@ -121,7 +123,7 @@ defmodule Atomic.Base.Queue do
       :ok
     end
 
-    __debug__("After push #{item} (#{answer}) #{label}", q)
+    # __debug__("After push #{item} (#{answer}) #{label}", q)
     answer
   end
 
